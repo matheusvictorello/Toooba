@@ -182,7 +182,9 @@ endinterface
 // fixpoint to instantiate modules
 interface CoreFixPoint;
     interface Vector#(AluExeNum, AluExePipeline) aluExeIfc;
+`ifdef ISA_F
     interface Vector#(FpuMulDivExeNum, FpuMulDivExePipeline) fpuMulDivExeIfc;
+`endif
     interface MemExePipeline memExeIfc;
     method Action killAll; // kill everything: used by commit stage
     interface Reg#(Bool) doStatsIfc;
@@ -274,6 +276,7 @@ module mkCore#(CoreId coreId)(Core);
         for(Integer i = 0; i < valueof(AluExeNum); i = i+1) begin
             aluSpecUpdate[i] = fix.aluExeIfc[i].specUpdate;
         end
+`ifdef ISA_F
         Vector#(FpuMulDivExeNum, SpeculationUpdate) fpuMulDivSpecUpdate;
         for(Integer i = 0; i < valueof(FpuMulDivExeNum); i = i+1) begin
             fpuMulDivSpecUpdate[i] = fix.fpuMulDivExeIfc[i].specUpdate;
@@ -286,6 +289,16 @@ module mkCore#(CoreId coreId)(Core);
             ),
             rob.specUpdate
         );
+`else
+        GlobalSpecUpdate#(CorrectSpecPortNum, ConflictWrongSpecPortNum) globalSpecUpdate <- mkGlobalSpecUpdate(
+            joinSpeculationUpdate(
+                append(vec(regRenamingTable.specUpdate,
+                                  specTagManager.specUpdate,
+                                  fix.memExeIfc.specUpdate), aluSpecUpdate)
+            ),
+            rob.specUpdate
+        );
+`endif
 
         // whether perf data is collected
         Reg#(Bool) doStatsReg <- mkConfigReg(False); 
@@ -297,9 +310,11 @@ module mkCore#(CoreId coreId)(Core);
             for(Integer i = 0; i < valueof(AluExeNum); i = i+1) begin
                 fix.aluExeIfc[i].rsAluIfc.setRegReady[wrAggrPort].put(Valid (dst));
             end
+`ifdef ISA_F
             for(Integer i = 0; i < valueof(FpuMulDivExeNum); i = i+1) begin
                 fix.fpuMulDivExeIfc[i].rsFpuMulDivIfc.setRegReady[wrAggrPort].put(Valid (dst));
             end
+`endif
             fix.memExeIfc.rsMemIfc.setRegReady[wrAggrPort].put(Valid (dst));
         endaction
         endfunction
@@ -321,9 +336,11 @@ module mkCore#(CoreId coreId)(Core);
                     method Action send(PhyRIndx dst, Data data);
                         // broadcast bypass
                         Integer recvPort = valueof(AluExeNum) * sendPort + i;
+`ifdef ISA_F
                         for(Integer j = 0; j < valueof(FpuMulDivExeNum); j = j+1) begin
                             fix.fpuMulDivExeIfc[j].recvBypass[recvPort].recv(dst, data);
                         end
+`endif
                         fix.memExeIfc.recvBypass[recvPort].recv(dst, data);
                         for(Integer j = 0; j < valueof(AluExeNum); j = j+1) begin
                             fix.aluExeIfc[j].recvBypass[recvPort].recv(dst, data);
@@ -367,6 +384,7 @@ module mkCore#(CoreId coreId)(Core);
             endrule
         end
 
+`ifdef ISA_F
         Vector#(FpuMulDivExeNum, FpuMulDivExePipeline) fpuMulDivExe;
         for(Integer i = 0; i < valueof(FpuMulDivExeNum); i = i+1) begin
             let fpuMulDivExeInput = (interface FpuMulDivExeInput;
@@ -385,6 +403,7 @@ module mkCore#(CoreId coreId)(Core);
             endinterface);
             fpuMulDivExe[i] <- mkFpuMulDivExePipeline(fpuMulDivExeInput);
         end
+`endif
 
         let memExeInput = (interface MemExeInput;
             method sbCons_lazyLookup = sbCons.lazyLookup[memRdPort].get;
@@ -409,7 +428,9 @@ module mkCore#(CoreId coreId)(Core);
         let memExe <- mkMemExePipeline(memExeInput);
 
         interface aluExeIfc = aluExe;
+`ifdef ISA_F
         interface fpuMulDivExeIfc = fpuMulDivExe;
+`endif
         interface memExeIfc = memExe;
         method Action killAll;
             globalSpecUpdate.incorrectSpec(True, ?, ?);
@@ -422,10 +443,12 @@ module mkCore#(CoreId coreId)(Core);
     for(Integer i = 0; i < valueof(AluExeNum); i = i+1) begin
         reservationStationAlu[i] = coreFix.aluExeIfc[i].rsAluIfc;
     end
+`ifdef ISA_F
     Vector#(FpuMulDivExeNum, ReservationStationFpuMulDiv) reservationStationFpuMulDiv;
     for(Integer i = 0; i < valueof(FpuMulDivExeNum); i = i+1) begin
         reservationStationFpuMulDiv[i] = coreFix.fpuMulDivExeIfc[i].rsFpuMulDivIfc;
     end
+`endif
     ReservationStationMem reservationStationMem = coreFix.memExeIfc.rsMemIfc;
     DTlbSynth dTlb = coreFix.memExeIfc.dTlbIfc;
     SplitLSQ lsq = coreFix.memExeIfc.lsqIfc;
@@ -522,7 +545,9 @@ module mkCore#(CoreId coreId)(Core);
         interface emIfc = epochManager;
         interface smIfc = specTagManager;
         interface rsAluIfc = reservationStationAlu;
+`ifdef ISA_F
         interface rsFpuMulDivIfc = reservationStationFpuMulDiv;
+`endif
         interface rsMemIfc = reservationStationMem;
         interface lsqIfc = lsq;
         method pendingMMIOPRq = mmio.hasPendingPRq;
@@ -617,9 +642,11 @@ module mkCore#(CoreId coreId)(Core);
     rule sendRobEnqTime;
         InstTime t = rob.getEnqTime;
         reservationStationMem.setRobEnqTime(t);
+`ifdef ISA_F
         for(Integer i = 0; i < valueof(FpuMulDivExeNum); i = i+1) begin
             reservationStationFpuMulDiv[i].setRobEnqTime(t);
         end
+`endif
         for(Integer i = 0; i < valueof(AluExeNum); i = i+1) begin
             reservationStationAlu[i].setRobEnqTime(t);
         end
@@ -792,10 +819,12 @@ module mkCore#(CoreId coreId)(Core);
     rule incAluRS1Full(doStats && reservationStationAlu[1].isFull_ehrPort0);
         aluRS1FullCycles.incr(1);
     endrule
+`ifdef ISA_F
     (* fire_when_enabled, no_implicit_conditions *)
     rule incFpuMulDivRSFull(doStats && reservationStationFpuMulDiv[0].isFull_ehrPort0);
         fpuMulDivRSFullCycles.incr(1);
     endrule
+`endif
     (* fire_when_enabled, no_implicit_conditions *)
     rule incMemRSFull(doStats && reservationStationMem.isFull_ehrPort0);
         memRSFullCycles.incr(1);
@@ -879,9 +908,11 @@ module mkCore#(CoreId coreId)(Core);
 
         function Data getFpuMulDivCnt(ExeStagePerfType pType);
             Data cnt = 0;
+`ifdef ISA_F
             for(Integer i = 0; i < valueof(FpuMulDivExeNum); i = i+1) begin
                 cnt = cnt + coreFix.fpuMulDivExeIfc[i].getPerf(pType);
             end
+`endif
             return cnt;
         endfunction
 
